@@ -8,6 +8,7 @@ Use this tool **once per session** when:
 2. No sandbox currently exists for the session
 3. The user asks to start a new project, scaffold an application, or test code in a live environment
 4. The user requests a fresh or reset environment
+5. You don't have a value for service_id
 
 ## Sandbox Capabilities
 
