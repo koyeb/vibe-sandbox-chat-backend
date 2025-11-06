@@ -1,4 +1,6 @@
 from typing import Optional, Union, List, Any
+import time
+import asyncio
 
 from koyeb import Sandbox
 from create_sandbox import create_sandbox_client
@@ -17,6 +19,30 @@ with open("get-sandbox-url.md", "r") as f:
 with open("run-command.md", "r") as f:
     RUN_COMMAND_PROMPT = f.read()
 
+def is_provisioning_error(error_message):
+    """Check if error indicates sandbox is still provisioning"""
+    error_str = str(error_message).lower()
+    return ("could not find instance for sandbox" in error_str and 
+            "the sandbox may not be fully provisioned yet" in error_str)
+
+def execute_with_retry(func, *args, **kwargs):
+    """Execute a function with retry logic for provisioning errors"""
+    max_retries = 2
+    retry_delay = 15  # seconds
+    
+    for attempt in range(max_retries + 1):  # 0, 1, 2 (3 total attempts)
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            if is_provisioning_error(str(e)) and attempt < max_retries:
+                print(f"Sandbox provisioning error detected (attempt {attempt + 1}/{max_retries + 1}). Retrying in {retry_delay} seconds...")
+                print(f"Error: {e}")
+                time.sleep(retry_delay)
+                continue
+            else:
+                # Either not a provisioning error, or we've exhausted retries
+                raise e
+
 def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_iterations=5):
     """
     Process a chat conversation with tool calling capabilities
@@ -34,13 +60,21 @@ def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_i
 IMPORTANT: You already have access to sandbox with service_id: {current_service_id}
 DO NOT create a new sandbox - use the existing one.
 
+The sandbox that you have access to is built with Go and packaged as a Docker container based on Ubuntu 22.04. It includes common utilities like curl, wget, git, python3, and jq, making it suitable for various automation and testing scenarios. If you need additional software, you should install it using standard package managers like apt. For example, to install Node.js and npm, you can run:
+```
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+
+```
+Be sure to reload the current shell environment after installing new software to ensure all environment variables are set correctly.
 AVAILABLE TOOLS ONLY:
 1. create_file_and_add_code - Create or modify files in the sandbox. If creating files in directories, first ensure the directory exists by using run_command to create it if needed.
-2. run_command - Execute shell commands in the sandbox. When creating files, you may need to run commands to install dependencies or start services, and when creating a new project, first use this to make a new working directory that any files will be in, ex mkdir -p /tmp/my_project/src
+2. run_command - Execute shell commands in the sandbox. When creating files, you may need to run commands to install dependencies or start services, and when creating a new project, first use this to make a new working directory that any files will be in, ex mkdir -p /tmp/my_project/src. Use -y in commands as needed for automatic yes to prompts.
 3. get_sandbox_url - Get the sandbox URL
 
 DO NOT try to call any other tools. Only use the tools listed above.
-If you try to call a non-existent tool, you will get an error."""
+If you try to call a non-existent tool, you will get an error.
+
+If a specific type of application is requested, ensure you set it up correctly by running any standard initialization commands *first* and installing dependencies before creating necessary files."""
     else:
         system_prompt = f"""You are a helpful coding assistant that can create and manage sandboxes.
 
@@ -195,58 +229,76 @@ def execute_tool_call(tool_call, existing_service_id=None):
         except json.JSONDecodeError:
             return {"error": f"Invalid JSON arguments: {arguments}"}
     
-    # Dispatch to the appropriate function
-    if function_name == "create_sandbox_client":
-        result = create_sandbox_client(
-            image=arguments.get("image", "koyeb/sandbox"),
-            name=arguments.get("name", "example-sandbox")
-        )
-        return {"result": result}
-    
-    elif function_name == "create_file_and_add_code":
-        service_id = arguments.get("service_id") or existing_service_id
-        
-        if not service_id:
-            print("No service_id available, creating sandbox automatically...")
-            sandbox_result = create_sandbox_client(
-                image="koyeb/sandbox",
-                name="auto-created-sandbox"
+    # Dispatch to the appropriate function with retry logic
+    try:
+        if function_name == "create_sandbox_client":
+            result = execute_with_retry(
+                create_sandbox_client,
+                image=arguments.get("image", "koyeb/sandbox"),
+                name=arguments.get("name", "example-sandbox")
             )
+            return {"result": result}
+        
+        elif function_name == "create_file_and_add_code":
+            service_id = arguments.get("service_id") or existing_service_id
             
-            if sandbox_result:
-                service_id = sandbox_result
-                print(f"Auto-created sandbox with ID: {service_id}")
-            else:
-                return {"error": "Failed to create sandbox automatically"}
+            if not service_id:
+                print("No service_id available, creating sandbox automatically...")
+                sandbox_result = execute_with_retry(
+                    create_sandbox_client,
+                    image="koyeb/sandbox",
+                    name="auto-created-sandbox"
+                )
+                
+                if sandbox_result:
+                    service_id = sandbox_result
+                    print(f"Auto-created sandbox with ID: {service_id}")
+                else:
+                    return {"error": "Failed to create sandbox automatically"}
+            
+            result = execute_with_retry(
+                create_file_and_add_code,
+                service_id=service_id,
+                file_path=arguments.get("file_path"),
+                code=arguments.get("code")
+            )
+            return {"result": result}
         
-        result = create_file_and_add_code(
-            service_id=service_id,
-            file_path=arguments.get("file_path"),
-            code=arguments.get("code")
-        )
-        return {"result": result}
-    
-    elif function_name == "get_sandbox_url":
-        service_id = arguments.get("service_id") or existing_service_id
+        elif function_name == "get_sandbox_url":
+            service_id = arguments.get("service_id") or existing_service_id
+            
+            if not service_id:
+                return {"error": "No service_id available. Create a sandbox first."}
+            
+            result = execute_with_retry(
+                get_sandbox_url,
+                service_id=service_id
+            )
+            return {"result": result}
         
-        if not service_id:
-            return {"error": "No service_id available. Create a sandbox first."}
-        
-        result = get_sandbox_url(service_id=service_id)
-        return {"result": result}
-    
-    elif function_name == "run_command":
-        service_id = arguments.get("service_id") or existing_service_id
-        command = arguments.get("command", "")
-        
-        if not service_id:
-            return {"error": "No service_id available. Create a sandbox first."}
-        
-        result = run_command(service_id=service_id, command=command)
-        return {"result": result}
+        elif function_name == "run_command":
+            service_id = arguments.get("service_id") or existing_service_id
+            command = arguments.get("command", "")
+            
+            if not service_id:
+                return {"error": "No service_id available. Create a sandbox first."}
+            
+            result = execute_with_retry(
+                run_command,
+                service_id=service_id,
+                command=command
+            )
+            return {"result": result}
 
-    else:
-        return {"error": f"Unknown function: {function_name}"}
+        else:
+            return {"error": f"Unknown function: {function_name}"}
+            
+    except Exception as e:
+        error_msg = str(e)
+        if is_provisioning_error(error_msg):
+            return {"error": f"Sandbox provisioning failed after retries: {error_msg}"}
+        else:
+            return {"error": error_msg}
 
 # Tools defined for use with the HuggingFace InferenceClient
 tools: List[Any] = [

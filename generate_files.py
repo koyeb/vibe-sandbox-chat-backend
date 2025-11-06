@@ -14,7 +14,10 @@ def create_file_and_add_code(service_id: str, file_path: str, code: str):
         sandbox = Sandbox.get_from_id(service_id, api_token=api_token)
 
         fs = sandbox.filesystem
-        # Create file if it doesn't exist
+        # Ensure directory exists
+        dir_path = os.path.dirname(file_path)
+        if dir_path:
+            sandbox.exec(f"mkdir -p {dir_path}")
         # Write file
         fs.write_file(file_path, code)
 

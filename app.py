@@ -10,12 +10,8 @@ from sandbox_agent import process_chat_with_tools, tools
 from delete_sandbox import delete_sandbox
 
 app = FastAPI()
-# MODEL_URL = os.getenv("MODEL_URL", "Qwen/Qwen2.5-7B-Instruct") 
-MODEL_URL = "Qwen/Qwen2.5-7B-Instruct"
 HF_TOKEN = os.getenv("HF_TOKEN")
 print(f"Using HF_TOKEN: {HF_TOKEN}")
-print(f"Using MODEL_URL: {MODEL_URL}")
-client = InferenceClient(MODEL_URL, token=HF_TOKEN) 
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,6 +36,8 @@ class DeleteRequest(BaseModel):
 AVAILABLE_MODELS = {
   "Qwen/Qwen2.5-7B-Instruct": "Qwen 2.5 7B Instruct",
   "meta-llama/Meta-Llama-3.1-8B-Instruct": "Meta Llama 3.1 8B Instruct",
+  "meta-llama/Llama-3.1-70B-Instruct": "Llama 3.1 70B Instruct",
+  "google/gemma-2-9b-it": "Gemma 2 9B It",
 }
 
 @app.get("/")
@@ -48,12 +46,15 @@ def read_root():
 
 @app.post("/chat")
 def generate_chat(request: ChatRequest):
+    client = InferenceClient(request.model, token=HF_TOKEN)
     messages_dict = [{"role": msg.role, "content": msg.content} for msg in request.messages]
     print(f"serviceId: {request.serviceId}")
+    print(f"model: {request.model}")
     # Add serviceId to system prompt if provided
     if request.serviceId:
         messages_dict.insert(0, {"role": "system", "content": f"The current service ID is {request.serviceId}. Use this ID when creating files in the sandbox."})
         print(f"Using service ID: {request.serviceId}")
+        print(f"Using model: {request.model}")
 
     # Use the abstracted function from sandbox_agent
     result = process_chat_with_tools(
