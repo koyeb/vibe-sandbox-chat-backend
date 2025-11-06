@@ -8,13 +8,13 @@ def create_file_and_add_code(service_id: str, file_path: str, code: str):
     if not api_token:
         print("Error: KOYEB_API_TOKEN not set")
         return
-
+    print(f"file_path: {file_path}")
     sandbox = None
     try:
         sandbox = Sandbox.get_from_id(service_id, api_token=api_token)
 
         fs = sandbox.filesystem
-
+        # Create file if it doesn't exist
         # Write file
         fs.write_file(file_path, code)
 

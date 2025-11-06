@@ -20,28 +20,56 @@ with open("run-command.md", "r") as f:
 def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_iterations=5):
     """
     Process a chat conversation with tool calling capabilities
-    
-    Args:
-        client: HuggingFace InferenceClient
-        messages_dict: List of message dictionaries
-        tools: List of available tools
-        service_id: Optional existing service ID
-        max_iterations: Maximum number of tool call iterations
-    
-    Returns:
-        Dictionary with conversation result
     """
     print(f"Starting chat processing with service_id: {service_id}")
     all_tool_results = []
     current_service_id = service_id
     conversation_messages = messages_dict.copy()
-    conversation_messages.insert(0, {"role": "system", "content": f"Current service_id: {current_service_id} or None - you will need to create one first PROMPT"})
+    consecutive_errors = 0  # Track consecutive errors
+    
+    # Create system prompt with clear tool instructions
+    if current_service_id:
+        system_prompt = f"""You are a helpful coding assistant that can create and manage sandboxes.
 
-    current_service_id = service_id
+IMPORTANT: You already have access to sandbox with service_id: {current_service_id}
+DO NOT create a new sandbox - use the existing one.
+
+AVAILABLE TOOLS ONLY:
+1. create_file_and_add_code - Create or modify files in the sandbox. If creating files in directories, first ensure the directory exists by using run_command to create it if needed.
+2. run_command - Execute shell commands in the sandbox. When creating files, you may need to run commands to install dependencies or start services, and when creating a new project, first use this to make a new working directory that any files will be in, ex mkdir -p /tmp/my_project/src
+3. get_sandbox_url - Get the sandbox URL
+
+DO NOT try to call any other tools. Only use the tools listed above.
+If you try to call a non-existent tool, you will get an error."""
+    else:
+        system_prompt = f"""You are a helpful coding assistant that can create and manage sandboxes.
+
+AVAILABLE TOOLS ONLY:
+1. create_sandbox_client - Create a new sandbox (use first if no sandbox exists)
+2. create_file_and_add_code - Create or modify files in a sandbox  
+3. run_command - Execute shell commands in a sandbox
+4. get_sandbox_url - Get the sandbox URL
+
+DO NOT try to call any other tools. Only use the tools listed above.
+If you try to call a non-existent tool, you will get an error."""
+
+    conversation_messages.insert(0, {"role": "system", "content": system_prompt})
 
     try:
         for iteration in range(max_iterations):
             print(f"Iteration {iteration + 1}")
+            
+            # Stop if we have too many consecutive errors
+            if consecutive_errors >= 2:
+                return {
+                    "content": "I encountered repeated errors trying to call tools. I'll stop here to avoid further issues.",
+                    "service_id": current_service_id,
+                    "tool_calls": all_tool_results if all_tool_results else None,
+                    "tool_results": all_tool_results,
+                    "iterations": iteration + 1,
+                    "error": "Too many consecutive tool errors",
+                    "success": False
+                }
             
             response = client.chat_completion(
                 messages=conversation_messages,
@@ -59,17 +87,23 @@ def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_i
                 print(f"Model requested {len(message.tool_calls)} tool calls")
                 print(f"Tool calls: {[tool_call.function.name for tool_call in message.tool_calls]}")
                 
-                # Add assistant message with content explaining what it's doing
+                # Add assistant message
                 assistant_message = {
                     "role": "assistant", 
                     "content": message.content or f"I'm going to call {len(message.tool_calls)} tool(s) to help you."
                 }
                 conversation_messages.append(assistant_message)
                 
-                # Execute each tool call and add results to conversation
+                # Execute each tool call
+                has_errors = False
                 for tool_call in message.tool_calls:
-                    result = execute_tool_call(tool_call)
+                    result = execute_tool_call(tool_call, current_service_id)
                     print(f"Tool {tool_call.function.name} result: {result}")
+                    
+                    # Check for errors
+                    if isinstance(result, dict) and "error" in result:
+                        has_errors = True
+                        print(f"Tool error: {result['error']}")
                     
                     # Extract service_id if this was a create_sandbox_client call
                     if tool_call.function.name == "create_sandbox_client" and isinstance(result, dict) and "result" in result:
@@ -77,12 +111,6 @@ def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_i
                         if isinstance(sandbox_result, str):
                             current_service_id = sandbox_result
                             print(f"Created new sandbox with ID: {current_service_id}")
-                            
-                            # Update the system message with the new service_id
-                            conversation_messages[0]["content"] = conversation_messages[0]["content"].replace(
-                                f"Current service_id: {service_id or 'None - you will need to create one first'}", 
-                                f"Current service_id: {current_service_id}"
-                            )
                     
                     # Store results for final response
                     all_tool_results.append({
@@ -91,7 +119,7 @@ def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_i
                         "result": result
                     })
                     
-                    # Add tool result to conversation for next iteration
+                    # Add tool result to conversation
                     tool_message = {
                         "role": "tool",
                         "tool_call_id": tool_call.id,
@@ -99,21 +127,17 @@ def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_i
                     }
                     conversation_messages.append(tool_message)
                 
-                # Continue to next iteration - don't return here!
+                # Update error counter
+                if has_errors:
+                    consecutive_errors += 1
+                else:
+                    consecutive_errors = 0  # Reset on success
+                
                 continue
             
             else:
-                # Check if the task seems incomplete
-                if iteration < 2 and current_service_id and not all_tool_results:
-                    # If we have a service_id but haven't used any tools, encourage more action
-                    encouragement = {
-                        "role": "system", 
-                        "content": "The user's request may require multiple steps. Consider what files need to be created or commands need to be run to fully complete their request."
-                    }
-                    conversation_messages.append(encouragement)
-                    continue
-                
                 # No more tool calls - return final response
+                consecutive_errors = 0  # Reset on normal completion
                 return {
                     "content": message.content,
                     "service_id": current_service_id,
@@ -125,13 +149,13 @@ def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_i
         
         # If we hit max iterations
         return {
-            "content": "I've completed as much as I could within the iteration limit. The sandbox is ready for further use.",
+            "content": "I've completed as much as I could within the iteration limit.",
             "service_id": current_service_id,
             "tool_calls": all_tool_results if all_tool_results else None,
             "tool_results": all_tool_results,
             "iterations": max_iterations,
             "warning": "Stopped due to iteration limit",
-            "success": True  # Changed to True since partial completion is still success
+            "success": True
         }
             
     except Exception as e:
@@ -144,10 +168,24 @@ def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_i
         }
 
 # Function to handle tool calls
-def execute_tool_call(tool_call):
+def execute_tool_call(tool_call, existing_service_id=None):
     """Execute a tool call and return the result"""
     function_name = tool_call.function.name
     arguments = tool_call.function.arguments
+    
+    # List of valid tool names for validation
+    valid_tools = [
+        "create_sandbox_client",
+        "create_file_and_add_code", 
+        "run_command",
+        "get_sandbox_url"
+    ]
+    
+    # Validate tool name
+    if function_name not in valid_tools:
+        return {
+            "error": f"Unknown function: {function_name}. Available tools are: {', '.join(valid_tools)}. Please use one of the available tools instead."
+        }
     
     # Parse arguments if they're a JSON string
     if isinstance(arguments, str):
@@ -166,11 +204,10 @@ def execute_tool_call(tool_call):
         return {"result": result}
     
     elif function_name == "create_file_and_add_code":
-        service_id = arguments.get("service_id")
+        service_id = arguments.get("service_id") or existing_service_id
         
-        # If service_id is missing, automatically create a sandbox first
         if not service_id:
-            print("No service_id provided, creating sandbox automatically...")
+            print("No service_id available, creating sandbox automatically...")
             sandbox_result = create_sandbox_client(
                 image="koyeb/sandbox",
                 name="auto-created-sandbox"
@@ -187,58 +224,26 @@ def execute_tool_call(tool_call):
             file_path=arguments.get("file_path"),
             code=arguments.get("code")
         )
-        return {
-            "result": result,
-            "auto_created_sandbox": service_id if not arguments.get("service_id") else None
-        }
+        return {"result": result}
     
     elif function_name == "get_sandbox_url":
-        service_id = arguments.get("service_id")
+        service_id = arguments.get("service_id") or existing_service_id
         
-        # If service_id is missing, automatically create a sandbox first
         if not service_id:
-            print("No service_id provided, creating sandbox automatically...")
-            sandbox_result = create_sandbox_client(
-                image="koyeb/sandbox",
-                name="auto-created-sandbox"
-            )
-            
-            if sandbox_result:
-                service_id = sandbox_result
-                print(f"Auto-created sandbox with ID: {service_id}")
-            else:
-                return {"error": "Failed to create sandbox automatically"}
+            return {"error": "No service_id available. Create a sandbox first."}
         
         result = get_sandbox_url(service_id=service_id)
-
-        return {
-            "result": result,
-            "auto_created_sandbox": service_id if not arguments.get("service_id") else None
-        }
+        return {"result": result}
     
     elif function_name == "run_command":
-        service_id = arguments.get("service_id")
+        service_id = arguments.get("service_id") or existing_service_id
         command = arguments.get("command", "")
         
-        # If service_id is missing, automatically create a sandbox first
         if not service_id:
-            print("No service_id provided, creating sandbox automatically...")
-            sandbox_result = create_sandbox_client(
-                image="koyeb/sandbox",
-                name="auto-created-sandbox"
-            )
-            
-            if sandbox_result:
-                service_id = sandbox_result
-                print(f"Auto-created sandbox with ID: {service_id}")
-            else:
-                return {"error": "Failed to create sandbox automatically"}
+            return {"error": "No service_id available. Create a sandbox first."}
         
         result = run_command(service_id=service_id, command=command)
-        return {
-            "result": result,
-            "auto_created_sandbox": service_id if not arguments.get("service_id") else None
-        }
+        return {"result": result}
 
     else:
         return {"error": f"Unknown function: {function_name}"}
@@ -249,82 +254,84 @@ tools: List[Any] = [
         "type": "function",
         "function": {
             "name": "create_sandbox_client",
-            # "description": "Create a new Koyeb sandbox client. Use only once at the start of a session. If a user makes a request that requires a sandbox and one does not yet exist, first call this function to create one. This function returns the sandbox_id which can be used for subsequent file operations.",
-            "description": CREATE_SANDBOX_PROMPT,
+            "description": "Create a new Koyeb sandbox environment. Use this first if no sandbox exists yet.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "image": {
                         "type": "string",
-                        "description": "The name of the sandbox image to use. Defaults to koyeb/sandbox",
+                        "description": "Docker image for the sandbox (default: koyeb/sandbox)"
                     },
                     "name": {
                         "type": "string",
-                        "description": "The name of the sandbox instance, defaults to example-sandbox",
-                    },
+                        "description": "Name for the sandbox instance (default: example-sandbox)"
+                    }
                 },
-                "required": [],
-            },
-        },
+                "required": []
+            }
+        }
     },
     {
         "type": "function",
         "function": {
             "name": "create_file_and_add_code",
-            # "description": "Create a new file in the sandbox and add code to it. If you don't yet have a sandbox, first call create_sandbox_client to create one. Use this to create or modify files within the sandbox at the user's request. !!Important: This function requires a valid service_id. If no service_id exists yet, you must first call create_sandbox_client to create one.",
-            "description": GENERATE_FILES_PROMPT,
+            "description": "Create or modify a file in the sandbox with specified content. Use for creating new files or updating existing ones.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "service_id": {
                         "type": "string",
-                        "description": "The ID of the service for the sandbox to use, as returned by create_sandbox_client or provided by the user. !!Important If you don't have this value, then call create_sandbox_client first to create a new sandbox, so you will need more than one tool call.",
+                        "description": "The service ID of the sandbox (required)"
                     },
                     "file_path": {
-                        "type": "string",
-                        "description": "The path to the file to create or modify within the sandbox.",
+                        "type": "string", 
+                        "description": "Path to the file (e.g., 'src/App.js', 'package.json')"
                     },
                     "code": {
                         "type": "string",
-                        "description": "The code content to write into the file.",
-                    },
+                        "description": "The complete content to write to the file"
+                    }
                 },
-                "required": ["sandbox_id", "file_path", "code"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_sandbox_url",
-            "description": GET_SANDBOX_URL_PROMPT,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "service_id": {
-                        "type": "string",
-                        "description": "The ID of the service for the sandbox to use, as returned by create_sandbox_client or provided by the user. !!Important If you don't have this value, then call create_sandbox_client first to create a new sandbox, so you will need more than one tool call.",
-                    },
-                },
-                "required": ["service_id"],
-            },
-        },
+                "required": ["service_id", "file_path", "code"]
+            }
+        }
     },
     {
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": RUN_COMMAND_PROMPT,
+            "description": "Execute a shell command in the sandbox. Use for installing packages, running scripts, or other terminal operations.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "service_id": {
                         "type": "string",
-                        "description": "The ID of the service for the sandbox to use, as returned by create_sandbox_client or provided by the user. !!Important If you don't have this value, then call create_sandbox_client first to create a new sandbox, so you will need more than one tool call.",
+                        "description": "The service ID of the sandbox (required)"
                     },
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to execute (e.g., 'npm install', 'python app.py')"
+                    }
                 },
-                "required": ["service_id"],
-            },
-        },
+                "required": ["service_id", "command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_sandbox_url",
+            "description": "Get the public URL for accessing the running sandbox application.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service_id": {
+                        "type": "string",
+                        "description": "The service ID of the sandbox (required)"
+                    }
+                },
+                "required": ["service_id"]
+            }
+        }
     }
 ]
