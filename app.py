@@ -53,8 +53,6 @@ def generate_chat(request: ChatRequest):
     # Add serviceId to system prompt if provided
     if request.serviceId:
         messages_dict.insert(0, {"role": "system", "content": f"The current service ID is {request.serviceId}. Use this ID when creating files in the sandbox."})
-        print(f"Using service ID: {request.serviceId}")
-        print(f"Using model: {request.model}")
 
     # Use the abstracted function from sandbox_agent
     result = process_chat_with_tools(
@@ -71,11 +69,47 @@ def generate_chat(request: ChatRequest):
         "message_count": len(request.messages)
     })
     
-    return result   
+    return result
+
+@app.get("/file-structure")
+def get_file_structure(serviceId: str):
+    from run_command import run_command
+    
+    # Exclude node cache and show actual project files
+    command = "find /tmp -type f -o -type d | grep -v node-compile-cache | head -50"
+    output = run_command(serviceId, command)
+    return {"file_structure": output}
 
 @app.post("/delete-sandbox")
 def delete_sandbox_request(request: DeleteRequest):
     delete_sandbox(request.serviceId)
     return {"message": f"Sandbox with ID {request.serviceId} has been deleted."}
-    
 
+# Websocket endpoint that updates the client when any logs are generated on the server side
+@app.websocket("/ws/logs/{serviceId}")
+async def websocket_logs_endpoint(websocket, serviceId: str):
+    from koyeb import Sandbox
+    import os
+    import asyncio
+
+    await websocket.accept()
+    api_token = os.getenv("KOYEB_API_TOKEN")
+    if not api_token:
+        await websocket.send_text("Error: KOYEB_API_TOKEN not set")
+        await websocket.close()
+        return
+    sandbox = Sandbox.get_from_id(serviceId, api_token=api_token)
+    if not sandbox:
+        await websocket.send_text(f"Error: Sandbox with ID {serviceId} not found")
+        await websocket.close()
+        return 
+    try:
+        while True:
+            # logs = sandbox.get_logs(tail=10)
+            # for log in logs:
+            #     await websocket.send_text(log)
+            await asyncio.sleep(5)  # Poll every 5 seconds
+    except Exception as e:
+        await websocket.send_text(f"Error: {str(e)}")
+    finally:
+        await websocket.close()

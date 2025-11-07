@@ -1,7 +1,7 @@
-from koyeb import Sandbox
 import os
+from koyeb import Sandbox
 
-def run_command(service_id: str, command: str) -> str:
+def run_command(service_id: str, command: str, timeout: int = 300) -> str:  # 5 minutes default
     print(f"Running command in sandbox {service_id}: {command}")
     api_token = os.getenv("KOYEB_API_TOKEN")
     if not api_token:
@@ -11,5 +11,6 @@ def run_command(service_id: str, command: str) -> str:
     if not sandbox:
         raise ValueError(f"Sandbox with ID {service_id} not found")
 
-    result = sandbox.exec(command)
+    # Add timeout parameter to exec call
+    result = sandbox.exec(command, timeout=timeout)
     return result.stdout.strip()
