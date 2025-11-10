@@ -52,7 +52,7 @@ def execute_with_retry(func, *args, **kwargs):
                 # Either not a provisioning error, or we've exhausted retries
                 raise e
 
-def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_iterations=5):
+def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_iterations=10):
     """
     Process a chat conversation with tool calling capabilities
     """
@@ -87,34 +87,36 @@ When the user asks you to create something:
 1. {"First call create_sandbox_client if no sandbox exists" if not current_service_id else "Set up the environment with run_command if needed"}
 
 2. !!Important Use this COMPLETE setup command (wait for it to finish):
-curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - && apt-get install -y nodejs && node --version && npm --version && rm -rf /tmp/my-project && cd /tmp && printf "No\n" | npx create-vite my-project --template react-ts && cd my-project && npm install && npm install tailwindcss @tailwindcss/vite
+curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - && apt-get install -y nodejs && rm -rf /tmp/my-project && cd /tmp && echo y | npx create-vite my-project --template react-ts && cd my-project && npm install && npm install -D tailwindcss postcss autoprefixer && npx tailwindcss@latest init -p
 
-This command installs Node.js, verifies installation, creates the /tmp/my-project directory, and initializes a React app there with the following structure:
+This above command already installs Node.js, verifies installation, creates the /tmp/my-project directory, and initializes a React app there with the following structure:
   README.md
   eslint.config.js
   node_modules/
   package.json
+  package-lock.json
   public/
-    favicon.ico
+    vite.svg
   index.html
   src/
     App.css
-    App.js
-    App.test.js
+    App.tsx
     index.css
-    index.js
-    logo.svg
+    main.tsx
+    assets/
+      react.svg
   tsconfig.app.json
   tsconfig.json
   tsconfig.node.json
   vite.config.ts
-You should write in these existing files or create new ones only as needed.
-3. Call create_file_and_add_code to modify files as needed !!Important: create files ONLY in /tmp/my-project for React apps and first run the setup command above
-4. After you have made changes to all necessary files, call this command to start the React app:
+!! Important You should write in these existing files or create new ones only as needed.
+3. Call get_sandbox_url to retrieve the URL of the sandbox.
+4. Call create_file_and_add_code on /tmp/myproject/vite.config.js and add the sandbox as a server.allowedHosts entry, adding the sandbox url you just got:
+server.allowedHosts: ['sandbox.<your-koyeb-subdomain>.koyeb.app']
+5. Call create_file_and_add_code to modify files as needed !!Important: create files ONLY in /tmp/my-project for React apps and first run the setup command above. Use the file structure created by that command as your guide.
+6. After you have made changes to all necessary files, call this command to start the React app:
 cd /tmp/my-project && npm run dev -- --host 0.0.0.0 --port 80
-
-5. Call get_sandbox_url to retrieve the URL
-6. Only THEN provide a brief summary with the URL
+7. Only THEN provide a brief summary with the URL
 
 IMPORTANT: The React setup command in step 2 does everything: installs Node.js, verifies installation, creates directory, and initializes React app. Wait for this complete command to finish before proceeding to file modifications.
 
@@ -428,7 +430,7 @@ tools: List[Any] = [
                     },
                     "file_path": {
                         "type": "string", 
-                        "description": "Path to the file (e.g., 'src/App.js', 'package.json')"
+                        "description": "Path to the file. Refer to the structure created by the React setup command."
                     },
                     "code": {
                         "type": "string",
@@ -453,7 +455,7 @@ tools: List[Any] = [
                     },
                     "command": {
                         "type": "string",
-                        "description": "The shell command to execute (e.g., 'npm install', 'python app.py')"
+                        "description": "The shell command to execute (e.g., 'npm install')"
                     }
                 },
                 "required": ["service_id", "command"]

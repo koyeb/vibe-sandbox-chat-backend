@@ -15,6 +15,7 @@ def create_sandbox_client(image: str = "koyeb/sandbox", name: str = "example-san
             name=name,
             wait_ready=True,
             api_token=api_token,
+            instance_type="small"
         )
 
         # Check status

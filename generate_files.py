@@ -31,6 +31,6 @@ def create_file_and_add_code(service_id: str, file_path: str, code: str):
         # sandbox.exec("chmod +x /tmp/script.py")
         # result = sandbox.exec("/tmp/script.py")
         # print(result.stdout.strip())
-        return f"File created at {file_path} and code added successfully."
+        return f"File created at {file_path} and code added successfully: file_info.content."
     except Exception as e:
         print(f"Error: {e}")
