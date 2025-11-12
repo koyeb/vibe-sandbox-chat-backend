@@ -50,18 +50,14 @@ def run_command(service_id: str, command: str, timeout: int = 300, log_service_i
         raise ValueError(error_msg)
 
     try:
-        print(f"[DEBUG] About to execute command: {command}")
         # Execute command
         result = sandbox.exec(command, timeout=timeout)
-        print(f"[DEBUG] Command executed, processing output...")
         
         # Broadcast output line by line
         if result.stdout:
             lines = result.stdout.split('\n')
-            print(f"[DEBUG] Got {len(lines)} output lines")
             for i, line in enumerate(lines):
                 if line.strip():  # Only send non-empty lines
-                    print(f"[DEBUG] Broadcasting output line {i}: {line[:50]}...")
                     safe_broadcast(
                         broadcast_to,
                         "command_output",
@@ -73,7 +69,6 @@ def run_command(service_id: str, command: str, timeout: int = 300, log_service_i
         
         # Broadcast errors if any
         if result.stderr:
-            print(f"[DEBUG] Got stderr: {result.stderr}")
             safe_broadcast(
                 broadcast_to,
                 "command_error",
@@ -89,7 +84,6 @@ def run_command(service_id: str, command: str, timeout: int = 300, log_service_i
             {"exit_code": getattr(result, 'exit_code', 0)}
         )
         
-        print(f"[DEBUG] Returning result: {len(result.stdout.strip())} characters")
         return result.stdout.strip()
         
     except Exception as e:

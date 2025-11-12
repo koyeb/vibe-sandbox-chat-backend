@@ -38,9 +38,11 @@ class DeleteRequest(BaseModel):
 
 AVAILABLE_MODELS = {
   "Qwen/Qwen2.5-7B-Instruct": "Qwen 2.5 7B Instruct",
-  "meta-llama/Meta-Llama-3.1-8B-Instruct": "Meta Llama 3.1 8B Instruct",
+  "meta-llama/Llama-3.1-8B-Instruct": "Llama 3.1 8B Instruct",
   "meta-llama/Llama-3.1-70B-Instruct": "Llama 3.1 70B Instruct",
+  "meta-llama/Llama-3.3-70B-Instruct": "Llama 3.3 70B Instruct",
   "google/gemma-2-9b-it": "Gemma 2 9B It",
+  "mistralai/Mistral-7B-Instruct-v0.3": "Mistral 7B Instruct v0.3",
 }
 
 @app.get("/")
