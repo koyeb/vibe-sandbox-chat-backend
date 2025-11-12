@@ -1,6 +1,7 @@
 from typing import Optional, Union, List, Any
 import time
 import asyncio
+import json
 
 from koyeb import Sandbox
 from create_sandbox import create_sandbox_client
@@ -8,6 +9,8 @@ from get_sandbox_url import get_sandbox_url
 from generate_files import create_file_and_add_code
 from run_command import run_command
 from expose_endpoint import expose_endpoint
+
+from websocket_utils import broadcast_log
 
 with open("prompt.md", "r") as f:
     PROMPT = f.read()
@@ -49,14 +52,61 @@ def execute_with_retry(func, *args, **kwargs):
                 time.sleep(retry_delay)
                 continue
             else:
-                # Either not a provisioning error, or we've exhausted retries
                 raise e
+def set_up_environment(service_id, log_service_id=None):
+    """Set up the sandbox environment with necessary installations"""
+    setup_command = (
+        "curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - && "
+        "apt-get install -y nodejs && "
+        "rm -rf /tmp/my-project && "
+        "cd /tmp && "
+        "echo y | npx create-vite my-project --template react-ts && "
+        "cd my-project && "
+        "npm install && "
+        "npm install -D tailwindcss postcss autoprefixer && "
+        "npx tailwindcss init -p"
+    )
+    
+    print("Setting up sandbox environment...")
+    
+    result = execute_with_retry(
+        run_command,
+        service_id=service_id,
+        command=setup_command,
+        log_service_id=log_service_id  # Pass log routing through
+    )
+    
+    print("Environment setup complete.")
+    return result
 
-def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_iterations=10):
+def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_iterations=10, log_service_id=None):
     """
-    Process a chat conversation with tool calling capabilities
+    Process chat with tools, sending logs to log_service_id if provided
     """
     print(f"Starting chat processing with service_id: {service_id}")
+
+    # If no service_id, create a sandbox first and get its ID
+    if not service_id:
+        print("No service_id provided, will create sandbox if needed.")
+        service_id = create_sandbox_client()
+
+    # Safe broadcast for agent start
+    def safe_broadcast(service_id, log_type, message, data=None):
+        try:
+            loop = asyncio.get_running_loop()
+            asyncio.create_task(broadcast_log(service_id, log_type, message, data))
+        except RuntimeError:
+            # No running loop - we're in sync context, skip broadcasting
+            print(f"[LOG] {log_type}: {message}")
+    
+    # Broadcast agent start
+    if log_service_id:
+        safe_broadcast(
+            log_service_id,
+            "agent_start", 
+            "🚀 Starting agent workflow..."
+        )
+    
     all_tool_results = []
     current_service_id = service_id
     conversation_messages = messages_dict.copy()
@@ -65,7 +115,7 @@ def process_chat_with_tools(client, messages_dict, tools, service_id=None, max_i
     # Single system prompt - prepend service_id info if it exists
     system_prompt = f"""You are a helpful coding assistant that can create and manage sandboxes and their React applications running on Vite.
 
-{f"IMPORTANT: You already have access to sandbox with service_id: {current_service_id}" if current_service_id else ""}
+{f"IMPORTANT: You already have access to sandbox with service_id: {current_service_id}"}
 
 CRITICAL BEHAVIOR RULES:
 - Perform all steps required to complete the entire user request
@@ -74,7 +124,7 @@ CRITICAL BEHAVIOR RULES:
 - Only provide a final summary AFTER all tools have been executed
 
 TOOLS:
-1. {"create_sandbox_client - Create a new sandbox (use first if no sandbox exists)" if not current_service_id else ""}
+1. set_up_environment - Set up the sandbox environment with necessary installations
 2. run_command - Execute shell commands in the sandbox
 3. create_file_and_add_code - Create or modify files in the sandbox
 4. get_sandbox_url - Get the sandbox URL
@@ -84,10 +134,8 @@ The environment resets with every command you make. When running shell commands,
 Only create files or projects in the /tmp directory.
 
 When the user asks you to create something:
-1. {"First call create_sandbox_client if no sandbox exists" if not current_service_id else "Set up the environment with run_command if needed"}
 
-2. !!Important Use this COMPLETE setup command (wait for it to finish):
-curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - && apt-get install -y nodejs && rm -rf /tmp/my-project && cd /tmp && echo y | npx create-vite my-project --template react-ts && cd my-project && npm install && npm install -D tailwindcss postcss autoprefixer && npx tailwindcss@latest init -p
+1. !!Important Use the set_up_environment function COMPLETE setup command (wait for it to finish)
 
 This above command already installs Node.js, verifies installation, creates the /tmp/my-project directory, and initializes a React app there with the following structure:
   README.md
@@ -110,15 +158,17 @@ This above command already installs Node.js, verifies installation, creates the 
   tsconfig.node.json
   vite.config.ts
 !! Important You should write in these existing files or create new ones only as needed.
-3. Call get_sandbox_url to retrieve the URL of the sandbox.
-4. Call create_file_and_add_code on /tmp/myproject/vite.config.js and add the sandbox as a server.allowedHosts entry, adding the sandbox url you just got:
-server.allowedHosts: ['sandbox.<your-koyeb-subdomain>.koyeb.app']
-5. Call create_file_and_add_code to modify files as needed !!Important: create files ONLY in /tmp/my-project for React apps and first run the setup command above. Use the file structure created by that command as your guide.
-6. After you have made changes to all necessary files, call this command to start the React app:
+!! Important Run this step only once.
+2. Call get_sandbox_url to retrieve the URL of the sandbox.
+3. Call create_file_and_add_code to modify files as needed !!Important: create files ONLY in /tmp/my-project for React apps and first run the setup command above. Use the file structure created by that command as your guide. Repeat this step as needed to add all necessary files.
+4. Only after you have added any code to files that you needed, call create_file_and_add_code on /tmp/myproject/vite.config.js and add the sandbox as a server.allowedHosts entry, adding the sandbox url you just got:
+  ```
+  server.allowedHosts: ['sandbox.<your-koyeb-subdomain>.koyeb.app']
+  ```
+Do this step only once.
+5. After you have made changes to all necessary files, call this command to start the React app:
 cd /tmp/my-project && npm run dev -- --host 0.0.0.0 --port 80
-7. Only THEN provide a brief summary with the URL
-
-IMPORTANT: The React setup command in step 2 does everything: installs Node.js, verifies installation, creates directory, and initializes React app. Wait for this complete command to finish before proceeding to file modifications.
+6. Only THEN provide a brief summary with the URL
 
 DO NOT describe your plan - execute it directly with tools."""
     
@@ -166,7 +216,7 @@ DO NOT describe your plan - execute it directly with tools."""
                 # Execute each tool call
                 has_errors = False
                 for tool_call in message.tool_calls:
-                    result = execute_tool_call(tool_call, current_service_id)
+                    result = execute_tool_call(tool_call, current_service_id, log_service_id)
                     print(f"Tool {tool_call.function.name} result: {result}")
                     
                     # Check for errors
@@ -278,61 +328,81 @@ DO NOT describe your plan - execute it directly with tools."""
         }
 
 # Function to handle tool calls
-def execute_tool_call(tool_call, existing_service_id=None):
+def execute_tool_call(tool_call, existing_service_id=None, log_service_id=None):
     """Execute a tool call and return the result"""
     function_name = tool_call.function.name
     arguments = tool_call.function.arguments
     
-    # List of valid tool names for validation
-    valid_tools = [
-        "create_sandbox_client",
-        "create_file_and_add_code", 
-        "run_command",
-        "get_sandbox_url",
-        "expose_endpoint"
-    ]
-    
-    # Validate tool name
-    if function_name not in valid_tools:
-        return {
-            "error": f"Unknown function: {function_name}. Available tools are: {', '.join(valid_tools)}. Please use one of the available tools instead."
-        }
-    
-    # Parse arguments if they're a JSON string
+    # Parse arguments if they're a string
     if isinstance(arguments, str):
-        import json
         try:
             arguments = json.loads(arguments)
-        except json.JSONDecodeError:
-            return {"error": f"Invalid JSON arguments: {arguments}"}
+        except json.JSONDecodeError as e:
+            return {"error": f"Invalid JSON in tool arguments: {str(e)}"}
     
-    # Dispatch to the appropriate function with retry logic
+    # Safe broadcast for tool start
+    def safe_broadcast(service_id, log_type, message, data=None):
+        try:
+            loop = asyncio.get_running_loop()
+            asyncio.create_task(broadcast_log(service_id, log_type, message, data))
+        except RuntimeError:
+            print(f"[LOG] {log_type}: {message}")
+    
+    # Broadcast tool start
+    if log_service_id:
+        safe_broadcast(
+            log_service_id,
+            "tool_start",
+            f"🔧 Calling tool: {function_name}",
+            {"tool": function_name, "arguments": arguments}
+        )
+    
+    print(f"Executing tool: {function_name} with arguments: {arguments}")
+    
     try:
-        if function_name == "create_sandbox_client":
+        if function_name == "run_command":
+            service_id = arguments.get("service_id") or existing_service_id
+            command = arguments.get("command", "")
+            
+            print(f"Running command: {command} on service: {service_id}")
+            
+            if not service_id:
+                return {"error": "No service_id available. Create a sandbox first."}
+            
             result = execute_with_retry(
-                create_sandbox_client,
-                image=arguments.get("image", "koyeb/sandbox"),
-                name=arguments.get("name", "example-sandbox")
+                run_command,
+                service_id=service_id,
+                command=command,
+                log_service_id=log_service_id  # Pass log routing
+            )
+            return {"result": result}
+        
+        elif function_name == "set_up_environment":
+            # FIXED: Pass log_service_id to set_up_environment
+            service_id = arguments.get("service_id") or existing_service_id
+            if not service_id:
+                return {"error": "No service_id available. Create a sandbox first."}
+            result = execute_with_retry(
+                set_up_environment,
+                service_id=service_id,
+                log_service_id=log_service_id  # Pass log routing
             )
             return {"result": result}
         
         elif function_name == "create_file_and_add_code":
-            service_id = arguments.get("service_id") or existing_service_id
-            
-            if not service_id:
-                print("No service_id available, creating sandbox automatically...")
-                sandbox_result = execute_with_retry(
-                    create_sandbox_client,
-                    image="koyeb/sandbox",
-                    name="auto-created-sandbox"
+            # Broadcast file operation
+            if log_service_id:
+                file_path = arguments.get("file_path", "unknown")
+                safe_broadcast(
+                    log_service_id,
+                    "file_operation",
+                    f"📝 Creating/updating file: {file_path}",
+                    {"file_path": file_path}
                 )
-                
-                if sandbox_result:
-                    service_id = sandbox_result
-                    print(f"Auto-created sandbox with ID: {service_id}")
-                else:
-                    return {"error": "Failed to create sandbox automatically"}
             
+            service_id = arguments.get("service_id") or existing_service_id
+            if not service_id:
+                return {"error": "No service_id available. Create a sandbox first."}
             result = execute_with_retry(
                 create_file_and_add_code,
                 service_id=service_id,
@@ -350,20 +420,6 @@ def execute_tool_call(tool_call, existing_service_id=None):
             result = execute_with_retry(
                 get_sandbox_url,
                 service_id=service_id
-            )
-            return {"result": result}
-        
-        elif function_name == "run_command":
-            service_id = arguments.get("service_id") or existing_service_id
-            command = arguments.get("command", "")
-            
-            if not service_id:
-                return {"error": "No service_id available. Create a sandbox first."}
-            
-            result = execute_with_retry(
-                run_command,
-                service_id=service_id,
-                command=command
             )
             return {"result": result}
         
@@ -388,6 +444,7 @@ def execute_tool_call(tool_call, existing_service_id=None):
             
     except Exception as e:
         error_msg = str(e)
+        print(f"Tool execution error: {error_msg}")
         if is_provisioning_error(error_msg):
             return {"error": f"Sandbox provisioning failed after retries: {error_msg}"}
         else:
@@ -497,6 +554,23 @@ tools: List[Any] = [
                     }
                 },
                 "required": ["service_id", "port"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_up_environment",
+            "description": "Set up the complete React development environment with Node.js, Vite, and Tailwind CSS. This should be called first when creating a new project.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service_id": {
+                        "type": "string",
+                        "description": "The service ID of the sandbox (required)"
+                    }
+                },
+                "required": ["service_id"]
             }
         }
     }
