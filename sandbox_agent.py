@@ -160,15 +160,21 @@ def execute_tool_call(tool_call, service_id, log_service_id=None):
     
     print(f"Executing tool: {function_name} with arguments: {arguments}")
     
-    # Import tool functions - set_up_environment is now defined in this file
+    # Import tool functions
     from run_command import run_command
     from generate_files import create_file_and_add_code
     from start_app import start_app
     from expose_endpoint import expose_endpoint
     
+    # CRITICAL FIX: Always use the service_id passed to this function, not from arguments
+    # The model might hallucinate names, so we override with the real UUID
+    if 'service_id' in arguments:
+        print(f"[DEBUG] Overriding service_id argument '{arguments['service_id']}' with actual service_id: {service_id}")
+        arguments['service_id'] = service_id
+    
     # Map function names to actual functions
     function_map = {
-        "set_up_environment": set_up_environment,  # Now references the function defined above
+        "set_up_environment": set_up_environment,
         "run_command": run_command,
         "create_file_and_add_code": create_file_and_add_code,
         "start_app": start_app,
@@ -210,6 +216,33 @@ async def process_chat_with_tools_streaming(
     Streaming version of process_chat_with_tools that yields chunks as the agent works
     """
     
+    # CREATE SANDBOX IF NONE PROVIDED
+    if not service_id:
+        print("No service_id provided, creating new sandbox...")
+        yield {
+            "type": "status",
+            "message": "📦 Creating new sandbox..."
+        }
+        
+        from create_sandbox import create_sandbox_client
+        try:
+            service_id = create_sandbox_client()
+            print(f"Created new sandbox with ID: {service_id}")
+            
+            yield {
+                "type": "sandbox_created",
+                "service_id": service_id,
+                "message": f"✅ Sandbox created: {service_id}"
+            }
+        except Exception as e:
+            error_msg = f"Failed to create sandbox: {str(e)}"
+            print(error_msg)
+            yield {
+                "type": "error",
+                "error": error_msg
+            }
+            return
+    
     # Safe broadcast for agent start
     def safe_broadcast(service_id, log_type, message, data=None):
         try:
@@ -239,15 +272,16 @@ async def process_chat_with_tools_streaming(
     conversation_messages = messages_dict.copy()
     consecutive_errors = 0  # Track consecutive errors
     
-    # Single system prompt - prepend service_id info if it exists
+    # Single system prompt - prepend service_id info
     system_prompt = f"""You are a helpful coding assistant that can create and manage sandboxes and their React applications running on Vite.
 
-{f"IMPORTANT: You already have access to sandbox with service_id: {current_service_id}" if current_service_id else ""}
+IMPORTANT: The sandbox service_id is: {current_service_id}
 
-CRITICAL BEHAVIOR RULES:
-- Perform all steps required to complete the entire user request
-- ALWAYS use tools to perform actions rather than just describing them
-- Call tools immediately when the user requests an action
+CRITICAL RULES:
+- ALWAYS use this exact service_id: {current_service_id}
+- DO NOT make up or modify the service_id
+- Perform all steps required to complete the user request
+- ALWAYS use tools to perform actions rather than describing them
 - Only provide a final summary AFTER all tools have been executed
 
 TOOLS:
@@ -261,35 +295,10 @@ Only create files or projects in the /tmp directory.
 
 When the user asks you to create something:
 
-1. !!Important Use the set_up_environment function COMPLETE setup command (wait for it to finish). 
-!! Important Run this step only once.
-
-This above command already installs Node.js, verifies installation, creates the /tmp/my-project directory, and initializes a React app there with the following structure:
-  README.md
-  eslint.config.js
-  node_modules/
-  package.json
-  package-lock.json
-  public/
-    vite.svg
-  index.html
-  src/
-    App.css
-    App.tsx
-    index.css
-    main.tsx
-    assets/
-      react.svg
-  tsconfig.app.json
-  tsconfig.json
-  tsconfig.node.json
-  vite.config.ts
-!! Important You should write in these existing files or create new ones only as needed.
-
-2. Call create_file_and_add_code to modify files as needed !!Important: create files ONLY in /tmp/my-project for React apps and first run the setup command above. Use the file structure created by that command as your guide. Repeat this step as needed to add all necessary files.
-3. Only after you have added any code to files that you needed, call start_app
-Do this step only once.
-4. Only THEN provide a brief summary with the URL
+1. Use set_up_environment (ONLY ONCE at start)
+2. Call create_file_and_add_code to modify files as needed (repeat as needed for all files)
+3. After all files are created, call start_app (ONLY ONCE)
+4. Provide a brief summary with the URL
 
 DO NOT describe your plan - execute it directly with tools."""
     
