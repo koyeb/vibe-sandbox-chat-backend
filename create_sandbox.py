@@ -19,9 +19,8 @@ def create_sandbox_client(image: str = "koyeb/sandbox", name: str = "example-san
         )
 
         # Check status
-        status = sandbox.status()
         is_healthy = sandbox.is_healthy()
-        print(f"Status: {status}, Healthy: {is_healthy}")
+        print(f"Healthy: {is_healthy}")
 
         # Test command
         result = sandbox.exec("echo 'Sandbox is ready!'")

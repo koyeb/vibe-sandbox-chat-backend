@@ -1,16 +1,29 @@
 import asyncio
-from typing import Optional, Union, List, Any
+from typing import Optional, List, AsyncGenerator
 from pydantic import BaseModel
 from huggingface_hub import InferenceClient
+import json
 
 from fastapi import FastAPI, WebSocket
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
-from datetime import datetime
 
-from sandbox_agent import process_chat_with_tools, tools 
+# Import model configuration
+from model_config import AVAILABLE_MODELS, MODEL_ROUTING
+
+# Fix the import - make sure this function exists and is properly imported
+try:
+    from get_sandbox_url import get_sandbox_url
+except ImportError as e:
+    print(f"Warning: Could not import get_sandbox_url: {e}")
+    def get_sandbox_url(service_id: str) -> str:
+        """Fallback function if import fails"""
+        return f"https://sandbox-{service_id}.koyeb.app"
+
+from sandbox_agent import process_chat_with_tools_streaming, tools 
 from delete_sandbox import delete_sandbox
-from websocket_utils import broadcast_log, add_log_connection, remove_log_connection, log_connections, process_queued_logs, get_queue_size
+from websocket_utils import add_log_connection, remove_log_connection, log_connections, process_queued_logs, get_queue_size
 
 app = FastAPI()
 HF_TOKEN = os.getenv("HF_TOKEN")
@@ -36,47 +49,82 @@ class ChatRequest(BaseModel):
 class DeleteRequest(BaseModel):
     serviceId: str
 
-AVAILABLE_MODELS = {
-  "Qwen/Qwen2.5-7B-Instruct": "Qwen 2.5 7B Instruct",
-  "meta-llama/Llama-3.1-8B-Instruct": "Llama 3.1 8B Instruct",
-  "meta-llama/Llama-3.1-70B-Instruct": "Llama 3.1 70B Instruct",
-  "meta-llama/Llama-3.3-70B-Instruct": "Llama 3.3 70B Instruct",
-  "google/gemma-2-9b-it": "Gemma 2 9B It",
-  "mistralai/Mistral-7B-Instruct-v0.3": "Mistral 7B Instruct v0.3",
-}
-
 @app.get("/")
 def read_root():
     return {"Hello": "World"}
 
-@app.post("/chat")
-def generate_chat(request: ChatRequest):
-    client = InferenceClient(request.model, token=HF_TOKEN)
-    messages_dict = [{"role": msg.role, "content": msg.content} for msg in request.messages]
-    print(f"serviceId: {request.serviceId}")
-    print(f"model: {request.model}")
-    
-    # Add serviceId to system prompt if provided
-    if request.serviceId:
-        messages_dict.insert(0, {"role": "system", "content": f"The current service ID is {request.serviceId}. Use this ID when creating files in the sandbox."})
+# Helper function to create InferenceClient based on model routing
+def create_inference_client(model: str) -> tuple[InferenceClient, Optional[str]]:
+    """
+    Create an InferenceClient for the given model.
+    Returns (client, endpoint_url) where endpoint_url is None for local models.
+    """
+    if model in MODEL_ROUTING:
+        # External endpoint
+        endpoint_config = MODEL_ROUTING[model]
+        client = InferenceClient(model=endpoint_config["endpoint"], token=HF_TOKEN)
+        return client, endpoint_config["endpoint"]
+    else:
+        # Local HF model
+        client = InferenceClient(model, token=HF_TOKEN)
+        return client, None
 
-    # Remove the websocket parameter
-    result = process_chat_with_tools(
-        client=client,
-        messages_dict=messages_dict,
-        tools=tools,
-        service_id=request.serviceId,
-        max_iterations=10,
-        log_service_id=request.serviceId  # Keep this for log routing
+@app.post("/chat")
+async def generate_chat(request: ChatRequest):
+    """Streaming chat endpoint"""
+    
+    async def event_generator() -> AsyncGenerator[str, None]:
+        # Create client based on model routing
+        client, endpoint_url = create_inference_client(request.model)
+        
+        if endpoint_url:
+            print(f"Using external endpoint for {request.model}: {endpoint_url}")
+        else:
+            print(f"Using local HF Inference API for {request.model}")
+        
+        # Prepare messages
+        messages_dict = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+        
+        try:
+            # Stream the response
+            async for chunk in process_chat_with_tools_streaming(
+                client=client,
+                messages_dict=messages_dict,
+                tools=tools,
+                service_id=request.serviceId,
+                max_iterations=10,
+                log_service_id=request.serviceId,
+                model=request.model
+            ):
+                # Send as Server-Sent Events (SSE) format
+                yield f"data: {json.dumps(chunk)}\n\n"
+                
+        except Exception as e:
+            print(f"Error processing chat: {e}")
+            error_chunk = {
+                "type": "error",
+                "error": str(e),
+                "model": request.model,
+                "message": f"Error connecting to {request.model}" + (f" endpoint ({endpoint_url})" if endpoint_url else "")
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+        
+        # Send final done message
+        done_chunk = {
+            "type": "done",
+            "model": request.model
+        }
+        yield f"data: {json.dumps(done_chunk)}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
     )
-    
-    # Add additional metadata for API response
-    result.update({
-        "model": request.model,
-        "message_count": len(request.messages)
-    })
-    
-    return result
 
 @app.get("/file-structure")
 def get_file_structure(serviceId: str):
@@ -95,6 +143,7 @@ def delete_sandbox_request(request: DeleteRequest):
 # Websocket endpoint that updates the client when any logs are generated on the server side
 @app.websocket("/ws/logs/{serviceId}")
 async def websocket_logs_endpoint(websocket: WebSocket, serviceId: str):
+    print(f"New WebSocket log connection for serviceId: {serviceId}")
     """Dedicated endpoint for streaming tool execution logs"""
     await websocket.accept()
     
@@ -130,6 +179,7 @@ async def websocket_logs_endpoint(websocket: WebSocket, serviceId: str):
             
     except Exception as e:
         try:
+            print(f"WebSocket log connection error for {serviceId}: {e}")
             await websocket.send_json({
                 "type": "error",
                 "message": f"❌ Log stream error: {str(e)}"
@@ -161,22 +211,8 @@ async def websocket_chat_endpoint(websocket: WebSocket, serviceId: str):
             model = data.get("model", "Qwen/Qwen2.5-7B-Instruct")
             messages = data.get("messages", [])
             
-            client = InferenceClient(model, token=HF_TOKEN)
-            messages_dict = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
-            
-            # Add serviceId to system prompt
-            if serviceId:
-                messages_dict.insert(0, {"role": "system", "content": f"The current service ID is {serviceId}. Use this ID when creating files in the sandbox."})
-
-            # Process chat with tools (logs will go to separate log connections)
-            result = process_chat_with_tools(
-                client=client,
-                messages_dict=messages_dict,
-                tools=tools,
-                service_id=serviceId,
-                max_iterations=5,
-                log_service_id=serviceId  # Pass serviceId for log routing
-            )
+            # Use unified processing function
+            result = process_websocket_chat(model, messages, serviceId)
             
             # Send only the chat response (no logs)
             await websocket.send_json({
@@ -197,6 +233,19 @@ async def websocket_chat_endpoint(websocket: WebSocket, serviceId: str):
     finally:
         await websocket.close()
 
+@app.get("/url/{serviceId}")
+def get_service_url(serviceId: str):
+    """Get the URL for a specific service"""
+    try:
+        url = get_sandbox_url(serviceId)
+        return {"url": url}
+    except Exception as e:
+        print(f"Error getting sandbox URL for {serviceId}: {e}")
+        return {
+            "url": None,
+            "error": f"Could not retrieve URL for service {serviceId}: {str(e)}"
+        }
+
 @app.get("/debug/queue-status")
 def get_queue_status():
     """Debug endpoint to check log queue status"""
@@ -207,3 +256,19 @@ def get_queue_status():
             for service_id, connections in log_connections.items()
         }
     }
+
+@app.get("/models")
+def get_models():
+    """Get available models with routing information"""
+    return {
+        "models": AVAILABLE_MODELS,
+        "routing": {
+            "local": [model for model in AVAILABLE_MODELS.keys() if model not in MODEL_ROUTING],
+            "external": {
+                model: config["endpoint"] 
+                for model, config in MODEL_ROUTING.items()
+            }
+        }
+    }
+
+

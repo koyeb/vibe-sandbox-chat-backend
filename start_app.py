@@ -5,7 +5,9 @@ from typing import Optional
 from generate_files import create_file_and_add_code
 from run_command import run_command
 from get_sandbox_url import get_sandbox_url
+from expose_endpoint import expose_endpoint
 from websocket_utils import broadcast_log, queue_log_for_broadcast
+from run_background_command import run_background_command
 
 def start_app(service_id: str, log_service_id: Optional[str] = None) -> str:
     # Use log_service_id if provided, otherwise use service_id
@@ -38,29 +40,29 @@ def start_app(service_id: str, log_service_id: Optional[str] = None) -> str:
         raise ValueError(error_msg)
 
     try: 
-        # Broadcast vite config update
+        # Step 1: Update Vite config with allowedHosts: true
         safe_broadcast(
             broadcast_to,
             "file_operation",
             "📝 Updating Vite configuration...",
-            {"file_path": "/tmp/my-project/vite.config.js"}  # Fixed path
+            {"file_path": "/tmp/my-project/vite.config.js"}
         )
         
-        sandbox_url = get_sandbox_url(service_id)
-        
-        # Fixed the f-string syntax
-        code = f"""import {{ defineConfig }} from 'vite'
+        # Enable external access with allowedHosts: true
+        code = """import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-export default defineConfig({{
+
+export default defineConfig({
   plugins: [react()],
-  server: {{
+  server: {
     host: '0.0.0.0',
     port: 80,
-    allowedHosts: ['{sandbox_url.split('//')[1].split(':')[0]}']
-  }}
-}})"""
+    strictPort: true,
+    allowedHosts: true
+  }
+})"""
         
-        update_vite = create_file_and_add_code(service_id, '/tmp/my-project/vite.config.js', code)  # Fixed path
+        update_vite = create_file_and_add_code(service_id, '/tmp/my-project/vite.config.js', code)
         
         safe_broadcast(
             broadcast_to,
@@ -68,32 +70,108 @@ export default defineConfig({{
             "✅ Vite configuration updated successfully"
         )
         
-        # Broadcast server start
+        # Step 2: Expose port 80 BEFORE starting the server
+        safe_broadcast(
+            broadcast_to,
+            "expose_start",
+            "🌐 Exposing port 80 for external access...",
+            {"port": 80}
+        )
+        
+        expose_result = expose_endpoint(service_id, 80)
+        print(f"Port exposure result: {expose_result}")
+        
+        safe_broadcast(
+            broadcast_to,
+            "expose_complete",
+            f"✅ Port 80 exposed successfully",
+            {"expose_result": expose_result}
+        )
+        
+        # Step 3: Start the dev server IN THE BACKGROUND
         safe_broadcast(
             broadcast_to,
             "server_start", 
             "🎯 Starting development server on port 80...",
             {"port": 80, "command": "npm run dev"}
         )
-        
-        # Note: This run_command will also broadcast its own logs
-        start_server = run_command(
+
+        # Use the background command runner
+        start_result = run_background_command(
             service_id, 
             'cd /tmp/my-project && npm run dev -- --host 0.0.0.0 --port 80',
-            log_service_id=log_service_id  # Pass through log routing
+            log_service_id=log_service_id
         )
+
+        print(f"Background server start result: {start_result}")
+
+        # Give the server a moment to start
+        safe_broadcast(
+            broadcast_to,
+            "server_starting",
+            "⏳ Waiting for server to initialize...",
+            {"wait_time": "3 seconds"}
+        )
+
+        import time
+        time.sleep(3)
+
+        # Check if process is still running
+        sandbox = Sandbox.get_from_id(service_id, api_token=api_token)
+        processes = sandbox.list_processes()
+        vite_process = None
+        process_status = "unknown"
+        
+        for process in processes:
+            if 'npm run dev' in process.command or 'vite' in process.command.lower():
+                vite_process = process
+                process_status = process.status
+                print(f"Found Vite process: {process.id} - Status: {process.status}")
+                break
+
+        if vite_process and vite_process.status == "running":
+            safe_broadcast(
+                broadcast_to,
+                "server_ready",
+                "✅ Development server is running",
+                {"process_id": vite_process.id, "status": vite_process.status}
+            )
+        else:
+            safe_broadcast(
+                broadcast_to,
+                "server_warning",
+                "⚠️ Server may still be starting...",
+                {"status": process_status}
+            )
+        
+        # Step 4: Get the public URL
+        sandbox_url = get_sandbox_url(service_id)
         
         safe_broadcast(
             broadcast_to,
             "app_complete",
-            "🎉 React application started successfully!",
-            {"server_output": start_server[:200]}  # First 200 chars of output
+            f"🎉 React application started and accessible at {sandbox_url}",
+            {"url": sandbox_url, "process_id": vite_process.id if vite_process else None}
         )
         
-        return f"Vite Update: {update_vite}\nServer Start: {start_server}\nRunning at {sandbox_url}"
+        return f"""✅ React app deployed successfully!
+
+Vite Config: Updated with external access enabled
+Port 80: {expose_result}
+Dev Server: {process_status}
+Process ID: {vite_process.id if vite_process else 'Unknown'}
+Public URL: {sandbox_url}
+
+Access your app at: {sandbox_url}
+
+Background process started: {start_result}"""
         
     except Exception as e:
         error_msg = f"Failed to start app: {str(e)}"
+        print(f"[ERROR] {error_msg}")
+        import traceback
+        traceback.print_exc()
+        
         safe_broadcast(
             broadcast_to,
             "app_error", 
