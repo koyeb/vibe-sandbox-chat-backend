@@ -1,6 +1,7 @@
 import asyncio
 from websocket_utils import broadcast_log
 import json
+from typing import AsyncGenerator, Dict, Any
 
 # Define tools for the agent
 tools = [
@@ -211,9 +212,12 @@ async def process_chat_with_tools_streaming(
     max_iterations=10, 
     log_service_id=None, 
     model=None
-):
+) -> AsyncGenerator[Dict[str, Any], None]:  # ADD THIS TYPE HINT
     """
     Streaming version of process_chat_with_tools that yields chunks as the agent works
+    
+    Yields:
+        Dict[str, Any]: Event chunks with different types (status, tool_calls, content, etc.)
     """
     
     # CREATE SANDBOX IF NONE PROVIDED

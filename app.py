@@ -191,48 +191,6 @@ async def websocket_logs_endpoint(websocket: WebSocket, serviceId: str):
         remove_log_connection(serviceId, websocket)
         await websocket.close()
 
-@app.websocket("/ws/chat/{serviceId}")
-async def websocket_chat_endpoint(websocket: WebSocket, serviceId: str):
-    """Dedicated endpoint for chat responses only"""
-    await websocket.accept()
-    
-    try:
-        while True:
-            # Receive chat request from client
-            data = await websocket.receive_json()
-            
-            # Send typing indicator
-            await websocket.send_json({
-                "type": "typing",
-                "message": "Assistant is thinking..."
-            })
-            
-            # Extract chat parameters
-            model = data.get("model", "Qwen/Qwen2.5-7B-Instruct")
-            messages = data.get("messages", [])
-            
-            # Use unified processing function
-            result = process_websocket_chat(model, messages, serviceId)
-            
-            # Send only the chat response (no logs)
-            await websocket.send_json({
-                "type": "assistant_response",
-                "message": result.get("response", ""),
-                "metadata": {
-                    "model": model,
-                    "message_count": len(messages),
-                    "tool_calls": result.get("tool_calls_made", 0)
-                }
-            })
-            
-    except Exception as e:
-        await websocket.send_json({
-            "type": "error",
-            "message": f"❌ Chat error: {str(e)}"
-        })
-    finally:
-        await websocket.close()
-
 @app.get("/url/{serviceId}")
 def get_service_url(serviceId: str):
     """Get the URL for a specific service"""
