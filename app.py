@@ -8,6 +8,8 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
+from utils.tools import tools
+
 
 # Import model configuration
 from model_config import AVAILABLE_MODELS, MODEL_ROUTING
@@ -21,9 +23,9 @@ except ImportError as e:
         """Fallback function if import fails"""
         return f"https://sandbox-{service_id}.koyeb.app"
 
-from sandbox_agent import process_chat_with_tools_streaming, tools 
+from sandbox_agent import process_chat_with_tools_streaming
 from delete_sandbox import delete_sandbox
-from websocket_utils import add_log_connection, remove_log_connection, log_connections, process_queued_logs, get_queue_size
+from utils.websocket_utils import add_log_connection, remove_log_connection, log_connections, process_queued_logs, get_queue_size
 
 app = FastAPI()
 HF_TOKEN = os.getenv("HF_TOKEN")

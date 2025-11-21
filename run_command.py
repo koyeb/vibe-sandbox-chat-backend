@@ -4,7 +4,7 @@ from typing import Optional
 from koyeb import Sandbox
 
 # Import from the new websocket utils module
-from websocket_utils import broadcast_log, queue_log_for_broadcast
+from utils.websocket_utils import broadcast_log, queue_log_for_broadcast
 
 def run_command(service_id: str, command: str, timeout: int = 300, log_service_id: Optional[str] = None) -> str:
     """

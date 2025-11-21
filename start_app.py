@@ -6,7 +6,7 @@ from generate_files import create_file_and_add_code
 from run_command import run_command
 from get_sandbox_url import get_sandbox_url
 from expose_endpoint import expose_endpoint
-from websocket_utils import broadcast_log, queue_log_for_broadcast
+from utils.websocket_utils import broadcast_log, queue_log_for_broadcast
 from run_background_command import run_background_command
 
 def start_app(service_id: str, log_service_id: Optional[str] = None) -> str:
@@ -40,6 +40,64 @@ def start_app(service_id: str, log_service_id: Optional[str] = None) -> str:
         raise ValueError(error_msg)
 
     try: 
+        # Step 0: Check if something is already running on port 80
+        safe_broadcast(
+            broadcast_to,
+            "port_check",
+            "🔍 Checking if port 80 is already in use...",
+            {"port": 80}
+        )
+        
+        # Check for existing processes using port 80
+        port_check_command = "lsof -ti:80 || echo 'Port 80 is free'"
+        port_check_result = run_command(service_id, port_check_command, log_service_id=broadcast_to)
+        
+        # Also check running processes for npm/vite
+        sandbox = Sandbox.get_from_id(service_id, api_token=api_token)
+        processes = sandbox.list_processes()
+        vite_already_running = False
+        existing_process = None
+        
+        for process in processes:
+            if process.status == "running" and ('npm run dev' in process.command or 'vite' in process.command.lower()):
+                vite_already_running = True
+                existing_process = process
+                print(f"Found existing Vite process: {process.id} - Status: {process.status}")
+                break
+        
+        if vite_already_running:
+            safe_broadcast(
+                broadcast_to,
+                "server_exists",
+                "ℹ️ Development server is already running on port 80",
+                {"process_id": existing_process.id, "status": existing_process.status}
+            )
+            
+            # Get the public URL
+            sandbox_url = get_sandbox_url(service_id)
+            
+            safe_broadcast(
+                broadcast_to,
+                "app_complete",
+                f"✅ React application already accessible at {sandbox_url}",
+                {"url": sandbox_url, "process_id": existing_process.id}
+            )
+            
+            return f"""ℹ️ React app is already running!
+
+Dev Server: running
+Process ID: {existing_process.id}
+Public URL: {sandbox_url}
+
+Your app is already accessible at: {sandbox_url}"""
+        
+        safe_broadcast(
+            broadcast_to,
+            "port_available",
+            "✅ Port 80 is available, proceeding with startup...",
+            {"port": 80}
+        )
+        
         # Step 1: Update Vite config with allowedHosts: true
         safe_broadcast(
             broadcast_to,
