@@ -2,51 +2,8 @@ import asyncio
 from utils.websocket_utils import broadcast_log
 import json
 from typing import AsyncGenerator, Dict, Any
+from start_app import set_up_environment
 
-def set_up_environment(service_id: str, log_service_id=None):
-    """
-    Set up the complete development environment with Node.js, npm, and create a React + Vite project
-    """
-    from run_command import run_command
-    
-    # Use log_service_id if provided, otherwise use service_id
-    broadcast_to = log_service_id or service_id
-    
-    print(f"[set_up_environment] Setting up environment for sandbox {service_id}")
-    
-    # Combined setup command that does everything in one shot
-    setup_command = """
-    # Install Node.js and npm
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    
-    # Verify installations
-    node --version && \
-    npm --version && \
-    
-    # Create React app with Vite in /tmp/my-project
-    cd /tmp && \
-    npm create vite@latest my-project -- --template react-ts && \
-    
-    # Install dependencies
-    cd /tmp/my-project && \
-    npm install && \
-    
-    # Install Tailwind CSS
-    npm install -D tailwindcss postcss autoprefixer && \
-    npx tailwindcss init -p && \
-    
-    echo "Setup complete!"
-    """
-    
-    try:
-        result = run_command(service_id, setup_command, log_service_id=broadcast_to)
-        print(f"[set_up_environment] Setup completed: {result[:200]}...")
-        return result
-    except Exception as e:
-        error_msg = f"Failed to set up environment: {str(e)}"
-        print(f"[set_up_environment] Error: {error_msg}")
-        return f"Error: {error_msg}"
 
 def execute_tool_call(tool_call, service_id, log_service_id=None):
     """Execute a tool call and return the result"""
@@ -58,7 +15,7 @@ def execute_tool_call(tool_call, service_id, log_service_id=None):
     
     # Import tool functions
     from run_command import run_command
-    from generate_files import create_file_and_add_code
+    from generate_files import create_file_and_add_code, read_file
     from start_app import start_app
     from expose_endpoint import expose_endpoint
     
@@ -73,6 +30,7 @@ def execute_tool_call(tool_call, service_id, log_service_id=None):
         "set_up_environment": set_up_environment,
         "run_command": run_command,
         "create_file_and_add_code": create_file_and_add_code,
+        "read_file": read_file,
         "start_app": start_app,
         "expose_endpoint": expose_endpoint
     }
@@ -172,7 +130,7 @@ async def process_chat_with_tools_streaming(
     consecutive_errors = 0  # Track consecutive errors
     
     # Single system prompt - prepend service_id info
-    system_prompt = f"""You are a helpful coding assistant that can create and manage sandboxes and their React applications running on Vite.
+    system_prompt = f"""You are a helpful coding assistant that can create and manage sandboxes and their React applications running on Vite and TypeScript (.tsx files).
 
 IMPORTANT: The sandbox service_id is: {current_service_id}
 
@@ -186,8 +144,9 @@ CRITICAL RULES:
 TOOLS:
 1. set_up_environment - Set up the sandbox environment with necessary installations
 2. run_command - Execute shell commands in the sandbox
-3. create_file_and_add_code - Create or modify files in the sandbox
-4. start_app - Start the React application in the sandbox and expose the endpoint
+3. read_file - Read contents of files in the sandbox
+4. create_file_and_add_code - Create or modify files in the sandbox
+5. start_app - Start the React application in the sandbox and expose the endpoint
 
 The environment resets with every command you make. When running shell commands, you must combine and run all commands as a single command string.
 Only create files or projects in the /tmp directory.
@@ -195,9 +154,10 @@ Only create files or projects in the /tmp directory.
 When the user asks you to create something:
 
 1. Use set_up_environment (ONLY ONCE at start)
-2. Call create_file_and_add_code to modify files as needed (repeat as needed for all files)
-3. After all files are created, call start_app (ONLY ONCE)
-4. Provide a brief summary with the URL
+2. Call read_file to get the current value of any files you need to modify. That way you're not just overriding files blindly.
+3. Call create_file_and_add_code to modify files as needed (repeat as needed for all files). Only make the specific update requested, and leave the remaining code. If the file already has functionality, don't override it unless requested.
+4. After all files are created, call start_app (ONLY ONCE). Do not try to run your own separate start commands.
+5. Provide a brief summary with the URL
 
 DO NOT describe your plan - execute it directly with tools."""
     
@@ -347,6 +307,10 @@ DO NOT describe your plan - execute it directly with tools."""
                             if 'run_command' in recent_tools and 'create_file_and_add_code' not in recent_tools:
                                 needs_continuation = True
                             
+                            # If we've read files but haven't created or modified them
+                            elif 'read_file' in recent_tools and 'create_file_and_add_code' not in recent_tools:
+                                needs_continuation = True
+
                             # If we've created files but haven't exposed/finished
                             elif 'create_file_and_add_code' in recent_tools and 'start_app' not in recent_tools:
                                 needs_continuation = True

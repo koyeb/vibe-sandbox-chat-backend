@@ -37,11 +37,17 @@ async def broadcast_log(service_id: str, log_type: str, message: str, data: Opti
             await websocket.send_json(log_message)
             successful_sends += 1
         except Exception as e:
+            print(f"[WebSocket] Failed to send to client: {e}")
             disconnected.append(websocket)
         
     # Remove disconnected websockets
     for ws in disconnected:
-        log_connections[service_id].remove(ws)
+        if ws in log_connections[service_id]:
+            log_connections[service_id].remove(ws)
+    
+    # Clean up empty connection lists
+    if service_id in log_connections and not log_connections[service_id]:
+        del log_connections[service_id]
 
 def queue_log_for_broadcast(service_id: str, log_type: str, message: str, data: Optional[Dict[str, Any]] = None):
     """Queue a log message for broadcasting from sync context"""
@@ -69,10 +75,8 @@ async def process_queued_logs():
             )
             processed_count += 1
         except Exception as e:
+            print(f"[WebSocket] Error processing queued log: {e}")
             break  # Stop processing on error
-    
-    if processed_count > 0:
-        print(f"[WebSocket Debug] Processed {processed_count} queued logs")
 
 def add_log_connection(service_id: str, websocket: WebSocket):
     """Add a websocket connection to the log connections"""
@@ -85,6 +89,7 @@ def remove_log_connection(service_id: str, websocket: WebSocket):
     if service_id in log_connections:
         if websocket in log_connections[service_id]:
             log_connections[service_id].remove(websocket)
+            print(f"[WebSocket] Removed connection for {service_id}. Remaining: {len(log_connections[service_id])}")
         if not log_connections[service_id]:
             del log_connections[service_id]
 

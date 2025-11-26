@@ -25,7 +25,6 @@ def run_background_command(service_id: str, command: str, timeout: int = 300, lo
         except RuntimeError:
             # No running loop - queue for later processing
             queue_log_for_broadcast(service_id, log_type, message, data)
-            print(f"[LOG] Queued for broadcast - {log_type}: {message}")
         except Exception as e:
             print(f"[WebSocket Error] Failed to broadcast {log_type}: {e}")
     

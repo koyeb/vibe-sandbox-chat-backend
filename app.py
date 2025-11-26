@@ -147,6 +147,7 @@ def delete_sandbox_request(request: DeleteRequest):
 async def websocket_logs_endpoint(websocket: WebSocket, serviceId: str):
     print(f"New WebSocket log connection for serviceId: {serviceId}")
     """Dedicated endpoint for streaming tool execution logs"""
+    
     await websocket.accept()
     
     # Add this connection using the utility function
@@ -173,25 +174,36 @@ async def websocket_logs_endpoint(websocket: WebSocket, serviceId: str):
                 
             # Send heartbeat every 30 iterations (30 seconds)
             if heartbeat_counter >= 30:
-                await websocket.send_json({
-                    "type": "heartbeat", 
-                    "message": "💓 Connection alive"
-                })
-                heartbeat_counter = 0  # Reset counter
+                try:
+                    await websocket.send_json({
+                        "type": "heartbeat", 
+                        "message": "💓 Connection alive"
+                    })
+                    heartbeat_counter = 0  # Reset counter
+                except Exception as e:
+                    print(f"Heartbeat failed for {serviceId}: {e}")
+                    break  # Exit loop if heartbeat fails
             
     except Exception as e:
-        try:
-            print(f"WebSocket log connection error for {serviceId}: {e}")
-            await websocket.send_json({
-                "type": "error",
-                "message": f"❌ Log stream error: {str(e)}"
-            })
-        except:
-            pass
+        print(f"WebSocket log connection error for {serviceId}: {e}")
+        # Don't try to send error message - connection is likely dead
     finally:
-        # Remove connection using the utility function
+        # Remove connection first
         remove_log_connection(serviceId, websocket)
-        await websocket.close()
+        
+        # Only try to close if not already closed
+        try:
+            # Check if websocket is still open before closing
+            if websocket.client_state.name != "DISCONNECTED":
+                await websocket.close()
+                print(f"[WebSocket] Closed connection for {serviceId}")
+            else:
+                print(f"[WebSocket] Connection already closed for {serviceId}")
+        except RuntimeError as e:
+            # Connection already closed, ignore
+            print(f"[WebSocket] Connection already closed during cleanup for {serviceId}: {e}")
+        except Exception as e:
+            print(f"[WebSocket] Error closing connection for {serviceId}: {e}")
 
 @app.get("/url/{serviceId}")
 def get_service_url(serviceId: str):

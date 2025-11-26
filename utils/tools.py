@@ -1,4 +1,6 @@
-# Define tools for the agent
+# Find the tools array and add the read_file tool definition
+# It should be added after the create_file_and_add_code tool
+
 tools = [
     {
         "type": "function",
@@ -60,6 +62,27 @@ tools = [
                     }
                 },
                 "required": ["service_id", "file_path", "code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the contents of a file in the sandbox. Use this before modifying files to understand their current content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service_id": {
+                        "type": "string",
+                        "description": "The service ID of the sandbox"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Full path to the file (must be in /tmp/my-project)"
+                    }
+                },
+                "required": ["service_id", "file_path"]
             }
         }
     },

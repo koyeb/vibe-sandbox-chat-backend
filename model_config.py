@@ -2,35 +2,19 @@
 Model Configuration
 Configure available models and their routing (local vs external endpoints)
 """
+import os
 
 # Available models that users can select
 AVAILABLE_MODELS = {
-    "Qwen/Qwen2.5-7B-Instruct": "Qwen 2.5 7B Instruct",
-    "meta-llama/Llama-3.1-8B-Instruct": "Llama 3.1 8B Instruct",
-    "meta-llama/Llama-3.3-70B-Instruct": "Llama 3.3 70B Instruct",
-    "Qwen/Qwen2.5-72B-Instruct": "Qwen 2.5 72B Instruct",
-    "Qwen/Qwen2.5-Coder-32B-Instruct": "Qwen 2.5 Coder 32B Instruct",
-    "Qwen/Qwen3-Coder-30B-A3B-Instruct": "Qwen 3 Coder 30B A3B Instruct"
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct": "Qwen 3 Coder 30B A3B Instruct",
 }
 
 # Model routing configuration
 # Models listed here will use external vLLM endpoints
 # Models not listed will use Hugging Face Inference API
 MODEL_ROUTING = {
-    "Qwen/Qwen2.5-72B-Instruct": {
-        "endpoint": "https://continuing-morissa-jenperson-cbe78ffc.koyeb.app",
-        "model_name": "Qwen/Qwen2.5-72B-Instruct"
-    },
-    "Qwen/Qwen2.5-Coder-32B-Instruct": {
-        "endpoint": "https://continuing-morissa-jenperson-cbe78ffc.koyeb.app",
-        "model_name": "Qwen/Qwen2.5-Coder-32B-Instruct",
-    },
-    "meta-llama/Llama-3.1-8B-Instruct": {
-        "endpoint": "https://continuing-morissa-jenperson-cbe78ffc.koyeb.app",
-        "model_name": "meta-llama/Llama-3.1-8B-Instruct",
-    },
     "Qwen/Qwen3-Coder-30B-A3B-Instruct": {
-        "endpoint": "https://continuing-morissa-jenperson-cbe78ffc.koyeb.app",
+        "endpoint": os.getenv("Qwen3_Coder_30B_A3B_Instruct_Endpoint"),
         "model_name": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
     }
 }

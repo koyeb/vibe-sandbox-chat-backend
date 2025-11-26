@@ -1,13 +1,78 @@
 from koyeb import Sandbox
 import os
 import asyncio
-from typing import Optional
+from typing import Optional, Tuple
 from generate_files import create_file_and_add_code
 from run_command import run_command
 from get_sandbox_url import get_sandbox_url
 from expose_endpoint import expose_endpoint
 from utils.websocket_utils import broadcast_log, queue_log_for_broadcast
 from run_background_command import run_background_command
+from check_vite_process import check_vite_process
+
+def set_up_environment(service_id: str, log_service_id=None):
+    """
+    Set up the complete development environment with Node.js, npm, and create a React + Vite project
+    """
+    from run_command import run_command
+    
+    # Use log_service_id if provided, otherwise use service_id
+    broadcast_to = log_service_id or service_id
+    
+    print(f"[set_up_environment] Setting up environment for sandbox {service_id}")
+    
+    # Check if Vite is already running (which means setup was already completed)
+    api_token = os.getenv("KOYEB_API_TOKEN")
+    if api_token:
+        try:
+            vite_running, process, status = check_vite_process(service_id, api_token)
+            if vite_running:
+                print(f"[set_up_environment] Environment already set up - Vite process found (ID: {process.id})")
+                return f"""✅ Environment already set up!
+
+Node.js and npm: Already installed
+React + Vite project: Already created at /tmp/my-project
+Dependencies: Already installed
+Vite process: Running (ID: {process.id})
+
+Setup was previously completed. Ready to modify files."""
+        except Exception as e:
+            print(f"[set_up_environment] Warning: Could not check for existing Vite process: {e}")
+            # Continue with setup anyway
+    
+    # Combined setup command that does everything in one shot
+    setup_command = """
+    # Install Node.js and npm
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    
+    # Verify installations
+    node --version && \
+    npm --version && \
+    
+    # Create React app with Vite in /tmp/my-project
+    cd /tmp && \
+    npm create vite@latest my-project -- --template react-ts && \
+    
+    # Install dependencies
+    cd /tmp/my-project && \
+    npm install && \
+    
+    # Install Tailwind CSS
+    npm install -D tailwindcss postcss autoprefixer && \
+    npx tailwindcss init -p && \
+    
+    echo "Setup complete!"
+    """
+    
+    try:
+        result = run_command(service_id, setup_command, log_service_id=broadcast_to)
+        print(f"[set_up_environment] Setup completed: {result[:200]}...")
+        return result
+    except Exception as e:
+        error_msg = f"Failed to set up environment: {str(e)}"
+        print(f"[set_up_environment] Error: {error_msg}")
+        return f"Error: {error_msg}"
 
 def start_app(service_id: str, log_service_id: Optional[str] = None) -> str:
     # Use log_service_id if provided, otherwise use service_id
@@ -48,29 +113,15 @@ def start_app(service_id: str, log_service_id: Optional[str] = None) -> str:
             {"port": 80}
         )
         
-        # Check for existing processes using port 80
-        port_check_command = "lsof -ti:80 || echo 'Port 80 is free'"
-        port_check_result = run_command(service_id, port_check_command, log_service_id=broadcast_to)
-        
-        # Also check running processes for npm/vite
-        sandbox = Sandbox.get_from_id(service_id, api_token=api_token)
-        processes = sandbox.list_processes()
-        vite_already_running = False
-        existing_process = None
-        
-        for process in processes:
-            if process.status == "running" and ('npm run dev' in process.command or 'vite' in process.command.lower()):
-                vite_already_running = True
-                existing_process = process
-                print(f"Found existing Vite process: {process.id} - Status: {process.status}")
-                break
+        # Check for existing Vite processes
+        vite_already_running, existing_process, process_status = check_vite_process(service_id, api_token)
         
         if vite_already_running:
             safe_broadcast(
                 broadcast_to,
                 "server_exists",
                 "ℹ️ Development server is already running on port 80",
-                {"process_id": existing_process.id, "status": existing_process.status}
+                {"process_id": existing_process.id, "status": process_status}
             )
             
             # Get the public URL
@@ -174,25 +225,15 @@ export default defineConfig({
         import time
         time.sleep(3)
 
-        # Check if process is still running
-        sandbox = Sandbox.get_from_id(service_id, api_token=api_token)
-        processes = sandbox.list_processes()
-        vite_process = None
-        process_status = "unknown"
-        
-        for process in processes:
-            if 'npm run dev' in process.command or 'vite' in process.command.lower():
-                vite_process = process
-                process_status = process.status
-                print(f"Found Vite process: {process.id} - Status: {process.status}")
-                break
+        # Check if process is now running using our abstracted function
+        is_running, vite_process, process_status = check_vite_process(service_id, api_token)
 
-        if vite_process and vite_process.status == "running":
+        if is_running and vite_process:
             safe_broadcast(
                 broadcast_to,
                 "server_ready",
                 "✅ Development server is running",
-                {"process_id": vite_process.id, "status": vite_process.status}
+                {"process_id": vite_process.id, "status": process_status}
             )
         else:
             safe_broadcast(
