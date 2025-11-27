@@ -50,7 +50,12 @@ def run_command(service_id: str, command: str, timeout: int = 300, log_service_i
 
     try:
         # Execute command
-        result = sandbox.exec(command, timeout=timeout)
+        result = sandbox.exec(command, timeout=timeout, on_stdout=lambda data:                     safe_broadcast(
+                        broadcast_to,
+                        "command_output",
+                        data.strip(),
+                        {"output_type": "stdout"}
+                    ))
         
         # Broadcast output line by line
         if result.stdout:
